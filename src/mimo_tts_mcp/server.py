@@ -34,6 +34,7 @@ from typing import Annotated, Any, Literal, Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.types import Audio
 from pydantic import Field
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,7 @@ def _read_voice_reference(ref: str) -> str:
 # Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tts_synthesize(
     text: Annotated[
         str,
@@ -229,15 +230,16 @@ def tts_synthesize(
         str,
         Field(description="MiMo TTS 模型 ID，默认 'mimo-v2.5-tts'。"),
     ] = DEFAULT_MODEL,
-) -> dict[str, Any]:
-    """**默认 TTS 工具**：用 MiMo 内置音色把一段文本合成语音并保存为音频文件。
+) -> list[Any]:
+    """**默认 TTS 工具**：用 MiMo 内置音色把一段文本合成语音并直接返回可播放的音频。
 
     适用场景（Use this when）：
     - 用户说「请朗读 XXX」「读一下这段：XXX」「Read this aloud: ...」
     - 用户没有明确给出参考音频，也没有要求生成全新音色
     - 用户给了风格描述（"用兴奋的语气"、"慢一点"、"cheerful, fast"）→ 放到 `style`
 
-    只有 `text` 是必填，其他全部有合理默认值。返回 `{path, format, voice, model}`。
+    只有 `text` 是必填，其他全部有合理默认值。返回值是 [AudioContent, 元数据 JSON]，
+    支持音频内容的 MCP 客户端会直接播放出声音，不需要再下载文件。
     """
     messages: list[dict[str, str]] = []
     if style:
@@ -252,10 +254,13 @@ def tts_synthesize(
     resp = _post_chat(payload)
     b64, real_fmt = _extract_audio(resp)
     path = _save_audio(b64, real_fmt, text[:24])
-    return {"path": str(path), "format": real_fmt, "voice": voice, "model": model}
+    return [
+        Audio(path=str(path)),
+        {"path": str(path), "format": real_fmt, "voice": voice, "model": model},
+    ]
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tts_voice_design(
     text: Annotated[str, Field(description="要朗读的文本内容（assistant content）。")],
     voice_description: Annotated[
@@ -270,7 +275,7 @@ def tts_voice_design(
         str,
         Field(description="必须使用支持 voice design 的模型。"),
     ] = "mimo-v2.5-tts-voicedesign",
-) -> dict[str, Any]:
+) -> list[Any]:
     """**音色设计**：根据「文字描述」生成一种全新音色，再用它朗读文本。
 
     适用场景：
@@ -278,7 +283,8 @@ def tts_voice_design(
     - 用户说「自定义一个声音 / 设计一个声音 / design a voice」
     - 内置音色 (Chloe / default_en …) 不能满足时
 
-    需要 `text` 和 `voice_description` 两个参数。返回 `{path, format, model}`。
+    需要 `text` 和 `voice_description` 两个参数。返回 [AudioContent, 元数据 JSON]，
+    支持音频内容的 MCP 客户端会直接播放出声音。
     """
     payload = {
         "model": model,
@@ -291,10 +297,13 @@ def tts_voice_design(
     resp = _post_chat(payload)
     b64, real_fmt = _extract_audio(resp)
     path = _save_audio(b64, real_fmt, text[:24])
-    return {"path": str(path), "format": real_fmt, "model": model}
+    return [
+        Audio(path=str(path)),
+        {"path": str(path), "format": real_fmt, "model": model},
+    ]
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def tts_voice_clone(
     text: Annotated[str, Field(description="要朗读的文本内容（assistant content）。")],
     reference_audio: Annotated[
@@ -309,7 +318,7 @@ def tts_voice_clone(
         str,
         Field(description="必须使用支持 voice clone 的模型。"),
     ] = "mimo-v2.5-tts-voiceclone",
-) -> dict[str, Any]:
+) -> list[Any]:
     """**音色克隆**：从一段参考音频里克隆出说话人音色，并用它朗读文本。
 
     适用场景：
@@ -317,6 +326,7 @@ def tts_voice_clone(
     - 用户提供了一段音频样本，要求"用 ta 的声音"
 
     需要 `text` 和 `reference_audio`。`reference_audio` 可以是本地路径或 base64 data URI。
+    返回 [AudioContent, 元数据 JSON]，支持音频内容的 MCP 客户端会直接播放出声音。
     """
     voice_uri = _read_voice_reference(reference_audio)
     payload = {
@@ -327,7 +337,10 @@ def tts_voice_clone(
     resp = _post_chat(payload)
     b64, real_fmt = _extract_audio(resp)
     path = _save_audio(b64, real_fmt, text[:24])
-    return {"path": str(path), "format": real_fmt, "model": model}
+    return [
+        Audio(path=str(path)),
+        {"path": str(path), "format": real_fmt, "model": model},
+    ]
 
 
 @mcp.tool()

@@ -231,10 +231,15 @@ clickable link; the file lives under `MIMO_OUTPUT_DIR` on the **server**
 | `tts_voice_clone` | `text`, `reference_audio` | `fmt`=`wav`, `model`=`mimo-v2.5-tts-voiceclone` | `reference_audio` = local path **or** `data:audio/...;base64,…` |
 | `list_voices` | — | — | Returns voices, models, plan, base_url, output_dir |
 
-All synthesize tools return `{ "path": "...", "format": "...", ... }` — the
-audio is written to `MIMO_OUTPUT_DIR` (default `./tts_output`, or
-`/data/tts_output` in the Docker image, mounted to `./tts_output` by the
-provided compose file).
+Each synthesize tool returns **two MCP content blocks**:
+
+1. **`AudioContent`** — the audio as inline base64 (MIME `audio/wav` etc.),
+   so MCP clients with audio support (Claude Desktop, Kelivo, …) **play it
+   inline without needing access to the server's filesystem**.
+2. **`TextContent`** — JSON metadata `{path, format, voice, model}` for chat
+   logs and follow-up tool calls. The same audio is also persisted to
+   `MIMO_OUTPUT_DIR` (default `./tts_output`, or `/data/tts_output` in the
+   Docker image, mounted to `./tts_output` by the provided compose file).
 
 ## Environment variables
 

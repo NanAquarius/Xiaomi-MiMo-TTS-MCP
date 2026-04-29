@@ -228,8 +228,14 @@ Windows：`%APPDATA%\Claude\claude_desktop_config.json`
 | `tts_voice_clone` | `text`、`reference_audio` | `fmt`=`wav`、`model`=`mimo-v2.5-tts-voiceclone` | `reference_audio` = 本地路径 **或** `data:audio/...;base64,…` |
 | `list_voices` | — | — | 返回内置音色、模型列表、当前 plan / base_url / 输出目录 |
 
-合成类工具返回 `{ "path": "...", "format": "...", ... }`，音频写入
-`MIMO_OUTPUT_DIR`。
+合成类工具会同时返回 **两块 MCP 内容**：
+
+1. **`AudioContent`**：把音频以 base64 内联回传（MIME 为 `audio/wav` 等），
+   支持音频内容的 MCP 客户端（Claude Desktop、Kelivo 等）会**直接播放**，
+   不需要访问服务端文件系统。
+2. **`TextContent`**：`{path, format, voice, model}` JSON，方便聊天记录和后续
+   工具调用。同一份音频也会落盘到 `MIMO_OUTPUT_DIR`（Docker 默认
+   `/data/tts_output`，已挂到宿主机的 `./tts_output`）。
 
 ## 环境变量
 

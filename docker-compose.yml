@@ -1,0 +1,16 @@
+services:
+  mimo-tts-mcp:
+    build: .
+    image: xiaomi-mimo-tts-mcp:latest
+    container_name: xiaomi-mimo-tts-mcp
+    restart: unless-stopped
+    environment:
+      MIMO_API_KEY: ${MIMO_API_KEY:?set MIMO_API_KEY in .env}
+      MIMO_BASE_URL: ${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    volumes:
+      - ./tts_output:/data/tts_output

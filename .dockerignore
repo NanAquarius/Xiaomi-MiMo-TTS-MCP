@@ -1,0 +1,10 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.egg-info
+tts_output
+.env
+.env.*
+docker-compose.yml

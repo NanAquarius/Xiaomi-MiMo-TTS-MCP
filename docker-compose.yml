@@ -6,7 +6,10 @@ services:
     restart: unless-stopped
     environment:
       MIMO_API_KEY: ${MIMO_API_KEY:?set MIMO_API_KEY in .env}
-      MIMO_BASE_URL: ${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}
+      # Optional — leave unset to auto-detect from key prefix:
+      MIMO_PLAN: ${MIMO_PLAN:-}
+      MIMO_REGION: ${MIMO_REGION:-cn}
+      MIMO_BASE_URL: ${MIMO_BASE_URL:-}
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8000

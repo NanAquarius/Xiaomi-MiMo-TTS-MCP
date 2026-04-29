@@ -1,14 +1,23 @@
 """Xiaomi MiMo TTS MCP server.
 
-Wraps Xiaomi MiMo's chat-completions-style TTS endpoint
-(https://api.xiaomimimo.com/v1/chat/completions) as MCP tools that any
+Wraps Xiaomi MiMo's chat-completions-style TTS endpoint as MCP tools that any
 MCP-compatible client (Cherry Studio, Claude Desktop, Continue, ...) can call.
+
+Aligned with the official docs:
+  - Pay-as-you-go (key prefix `sk-`):
+        https://api.xiaomimimo.com/v1
+  - Token Plan (key prefix `tp-`), pick one regional cluster:
+        https://token-plan-cn.xiaomimimo.com/v1   (China)
+        https://token-plan-sgp.xiaomimimo.com/v1  (Singapore)
+        https://token-plan-ams.xiaomimimo.com/v1  (Europe / Amsterdam)
+
+Auth header is `api-key: <KEY>` (NOT the OpenAI-style `Authorization: Bearer`).
 
 Exposed tools:
   - tts_synthesize     : built-in voice synthesis
   - tts_voice_design   : generate audio with a voice described in text
   - tts_voice_clone    : clone a voice from a reference audio file
-  - list_voices        : show built-in voices
+  - list_voices        : show built-in voices / supported models / current endpoint
 """
 
 from __future__ import annotations
@@ -28,16 +37,21 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 # ---------------------------------------------------------------------------
-# Config
+# Endpoint resolution
 # ---------------------------------------------------------------------------
 
-DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
+PAY_AS_YOU_GO_BASE_URL = "https://api.xiaomimimo.com/v1"
+TOKEN_PLAN_BASE_URLS: dict[str, str] = {
+    "cn":  "https://token-plan-cn.xiaomimimo.com/v1",
+    "sgp": "https://token-plan-sgp.xiaomimimo.com/v1",
+    "ams": "https://token-plan-ams.xiaomimimo.com/v1",
+}
+
 DEFAULT_MODEL = "mimo-v2.5-tts"
 DEFAULT_VOICE = "Chloe"
 DEFAULT_FORMAT: Literal["wav", "mp3", "pcm16"] = "wav"
 DEFAULT_TIMEOUT = 120.0
 
-# A non-exhaustive list; voices may be added/removed by Xiaomi over time.
 BUILT_IN_VOICES: list[str] = [
     "Chloe",
     "mimo_default",
@@ -51,9 +65,61 @@ def _env(name: str, default: str | None = None) -> str | None:
     return v if v not in (None, "") else default
 
 
+def _resolve_base_url(api_key: str | None) -> tuple[str, str]:
+    """Return (base_url, plan) where plan ∈ {'pay-as-you-go','token-plan','custom'}.
+
+    Resolution order:
+      1. MIMO_BASE_URL env var (explicit override) → 'custom'.
+      2. MIMO_PLAN=token-plan + MIMO_REGION (cn|sgp|ams) → token-plan cluster.
+      3. MIMO_PLAN=pay-as-you-go → pay-as-you-go endpoint.
+      4. Auto-detect from key prefix: 'tp-' → token-plan, 'sk-' → pay-as-you-go.
+      5. Fallback to pay-as-you-go.
+    """
+    explicit = _env("MIMO_BASE_URL")
+    if explicit:
+        return explicit.rstrip("/"), "custom"
+
+    plan = (_env("MIMO_PLAN") or "").strip().lower().replace("_", "-")
+    region = (_env("MIMO_REGION") or "cn").strip().lower()
+
+    if plan == "token-plan":
+        url = TOKEN_PLAN_BASE_URLS.get(region)
+        if not url:
+            raise RuntimeError(
+                f"Unknown MIMO_REGION={region!r}; expected one of "
+                f"{sorted(TOKEN_PLAN_BASE_URLS)}"
+            )
+        return url, "token-plan"
+    if plan in ("pay-as-you-go", "payg", "paygo"):
+        return PAY_AS_YOU_GO_BASE_URL, "pay-as-you-go"
+
+    if api_key:
+        if api_key.startswith("tp-"):
+            return TOKEN_PLAN_BASE_URLS.get(region, TOKEN_PLAN_BASE_URLS["cn"]), "token-plan"
+        if api_key.startswith("sk-"):
+            return PAY_AS_YOU_GO_BASE_URL, "pay-as-you-go"
+
+    return PAY_AS_YOU_GO_BASE_URL, "pay-as-you-go"
+
+
 API_KEY = _env("MIMO_API_KEY")
-BASE_URL = _env("MIMO_BASE_URL", DEFAULT_BASE_URL) or DEFAULT_BASE_URL
+BASE_URL, PLAN = _resolve_base_url(API_KEY)
 OUTPUT_DIR = Path(_env("MIMO_OUTPUT_DIR", "./tts_output") or "./tts_output").resolve()
+
+# Sanity warning on key/plan mismatch.
+if API_KEY:
+    if PLAN == "token-plan" and API_KEY.startswith("sk-"):
+        print(
+            "[xiaomi-mimo-tts-mcp] WARNING: Using a Token Plan base URL with an "
+            "'sk-' key. Token Plan only accepts 'tp-' keys.",
+            file=sys.stderr,
+        )
+    elif PLAN == "pay-as-you-go" and API_KEY.startswith("tp-"):
+        print(
+            "[xiaomi-mimo-tts-mcp] WARNING: Using the pay-as-you-go base URL with "
+            "a 'tp-' key. Set MIMO_PLAN=token-plan and MIMO_REGION accordingly.",
+            file=sys.stderr,
+        )
 
 mcp = FastMCP("xiaomi-mimo-tts")
 
@@ -81,8 +147,8 @@ def _check_api_key() -> str:
     if not API_KEY:
         raise RuntimeError(
             "MIMO_API_KEY is not set. Get one from "
-            "https://platform.xiaomimimo.com and export it before starting "
-            "the MCP server."
+            "https://platform.xiaomimimo.com (sk-... for pay-as-you-go, "
+            "tp-... for Token Plan) and export it before starting the MCP server."
         )
     return API_KEY
 
@@ -92,12 +158,12 @@ def _post_chat(payload: dict[str, Any]) -> dict[str, Any]:
         "api-key": _check_api_key(),
         "Content-Type": "application/json",
     }
-    url = BASE_URL.rstrip("/") + "/chat/completions"
+    url = f"{BASE_URL}/chat/completions"
     with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
         r = client.post(url, headers=headers, json=payload)
         if r.status_code >= 400:
             raise RuntimeError(
-                f"MiMo TTS API error {r.status_code}: {r.text[:500]}"
+                f"MiMo TTS API error {r.status_code} from {url}: {r.text[:500]}"
             )
         return r.json()
 
@@ -206,7 +272,7 @@ def tts_voice_clone(
 
 @mcp.tool()
 def list_voices() -> dict[str, Any]:
-    """List known built-in voices and supported TTS model ids."""
+    """List known built-in voices, supported TTS model ids, and the active endpoint."""
     return {
         "built_in_voices": BUILT_IN_VOICES,
         "models": [
@@ -215,6 +281,8 @@ def list_voices() -> dict[str, Any]:
             "mimo-v2.5-tts-voiceclone",
             "mimo-v2-tts",
         ],
+        "plan": PLAN,
+        "base_url": BASE_URL,
         "output_dir": str(OUTPUT_DIR),
     }
 
@@ -249,7 +317,7 @@ def main() -> None:
         mcp.settings.port = args.port
 
     print(
-        f"[xiaomi-mimo-tts-mcp] transport={args.transport} "
+        f"[xiaomi-mimo-tts-mcp] transport={args.transport} plan={PLAN} "
         f"base_url={BASE_URL} output_dir={OUTPUT_DIR}",
         file=sys.stderr,
     )

@@ -14,7 +14,7 @@ Aligned with the official docs:
 Auth header is `api-key: <KEY>` (NOT the OpenAI-style `Authorization: Bearer`).
 
 Exposed tools:
-  - tts_synthesize     : built-in voice synthesis
+  - tts_synthesize     : built-in voice synthesis (default tool, use first)
   - tts_voice_design   : generate audio with a voice described in text
   - tts_voice_clone    : clone a voice from a reference audio file
   - list_voices        : show built-in voices / supported models / current endpoint
@@ -105,6 +105,7 @@ def _resolve_base_url(api_key: str | None) -> tuple[str, str]:
 API_KEY = _env("MIMO_API_KEY")
 BASE_URL, PLAN = _resolve_base_url(API_KEY)
 OUTPUT_DIR = Path(_env("MIMO_OUTPUT_DIR", "./tts_output") or "./tts_output").resolve()
+AUTH_TOKEN = _env("MCP_AUTH_TOKEN")  # optional bearer auth for HTTP transport
 
 # Sanity warning on key/plan mismatch.
 if API_KEY:
@@ -196,16 +197,36 @@ def _read_voice_reference(ref: str) -> str:
 
 @mcp.tool()
 def tts_synthesize(
-    text: Annotated[str, Field(description="Text to be spoken (assistant content).")],
-    voice: Annotated[str, Field(description="Built-in voice name, e.g. 'Chloe'.")] = DEFAULT_VOICE,
+    text: Annotated[
+        str,
+        Field(description="要朗读 / 合成的文本内容（assistant content）。Text to be read aloud."),
+    ],
+    voice: Annotated[
+        str,
+        Field(description="内置音色名（Built-in voice），默认 'Chloe'。可选：Chloe / mimo_default / default_en / default_zh。"),
+    ] = DEFAULT_VOICE,
     style: Annotated[
         Optional[str],
-        Field(description="Optional style/emotion description (user content), e.g. 'cheerful, fast'."),
+        Field(description="可选的风格 / 情绪描述（user content），例如 'cheerful, fast' 或 '温柔，慢速'。"),
     ] = None,
-    fmt: Annotated[Literal["wav", "mp3", "pcm16"], Field(description="Output audio format.")] = DEFAULT_FORMAT,
-    model: Annotated[str, Field(description="MiMo TTS model id.")] = DEFAULT_MODEL,
+    fmt: Annotated[
+        Literal["wav", "mp3", "pcm16"],
+        Field(description="输出音频格式，默认 wav。"),
+    ] = DEFAULT_FORMAT,
+    model: Annotated[
+        str,
+        Field(description="MiMo TTS 模型 ID，默认 'mimo-v2.5-tts'。"),
+    ] = DEFAULT_MODEL,
 ) -> dict[str, Any]:
-    """Synthesize speech with a built-in MiMo voice. Returns the saved file path."""
+    """**默认 TTS 工具**：用 MiMo 内置音色把一段文本合成语音并保存为音频文件。
+
+    适用场景（Use this when）：
+    - 用户说「请朗读 XXX」「读一下这段：XXX」「Read this aloud: ...」
+    - 用户没有明确给出参考音频，也没有要求生成全新音色
+    - 用户给了风格描述（"用兴奋的语气"、"慢一点"、"cheerful, fast"）→ 放到 `style`
+
+    只有 `text` 是必填，其他全部有合理默认值。返回 `{path, format, voice, model}`。
+    """
     messages: list[dict[str, str]] = []
     if style:
         messages.append({"role": "user", "content": style})
@@ -224,15 +245,29 @@ def tts_synthesize(
 
 @mcp.tool()
 def tts_voice_design(
-    text: Annotated[str, Field(description="Text to be spoken (assistant content).")],
+    text: Annotated[str, Field(description="要朗读的文本内容（assistant content）。")],
     voice_description: Annotated[
         str,
-        Field(description="Natural-language description of the desired voice, e.g. 'young male, warm tone'."),
+        Field(description="对目标音色的自然语言描述，例如 '年轻男声，温暖低沉' / 'a warm young female voice'。"),
     ],
-    fmt: Annotated[Literal["wav", "mp3", "pcm16"], Field(description="Output audio format.")] = DEFAULT_FORMAT,
-    model: Annotated[str, Field(description="Must be a voice-design capable model.")] = "mimo-v2.5-tts-voicedesign",
+    fmt: Annotated[
+        Literal["wav", "mp3", "pcm16"],
+        Field(description="输出音频格式，默认 wav。"),
+    ] = DEFAULT_FORMAT,
+    model: Annotated[
+        str,
+        Field(description="必须使用支持 voice design 的模型。"),
+    ] = "mimo-v2.5-tts-voicedesign",
 ) -> dict[str, Any]:
-    """Synthesize speech using a voice generated from a free-text description."""
+    """**音色设计**：根据「文字描述」生成一种全新音色，再用它朗读文本。
+
+    适用场景：
+    - 用户描述了一种**还没有**的音色，例如「用一个慵懒的小女孩声音读……」
+    - 用户说「自定义一个声音 / 设计一个声音 / design a voice」
+    - 内置音色 (Chloe / default_en …) 不能满足时
+
+    需要 `text` 和 `voice_description` 两个参数。返回 `{path, format, model}`。
+    """
     payload = {
         "model": model,
         "messages": [
@@ -249,15 +284,28 @@ def tts_voice_design(
 
 @mcp.tool()
 def tts_voice_clone(
-    text: Annotated[str, Field(description="Text to be spoken (assistant content).")],
+    text: Annotated[str, Field(description="要朗读的文本内容（assistant content）。")],
     reference_audio: Annotated[
         str,
-        Field(description="Path to a reference audio file, or a 'data:audio/...;base64,...' URI."),
+        Field(description="参考音频：本地音频文件路径，或 'data:audio/...;base64,...' 形式的 data URI。"),
     ],
-    fmt: Annotated[Literal["wav", "mp3", "pcm16"], Field(description="Output audio format.")] = DEFAULT_FORMAT,
-    model: Annotated[str, Field(description="Must be a voice-clone capable model.")] = "mimo-v2.5-tts-voiceclone",
+    fmt: Annotated[
+        Literal["wav", "mp3", "pcm16"],
+        Field(description="输出音频格式，默认 wav。"),
+    ] = DEFAULT_FORMAT,
+    model: Annotated[
+        str,
+        Field(description="必须使用支持 voice clone 的模型。"),
+    ] = "mimo-v2.5-tts-voiceclone",
 ) -> dict[str, Any]:
-    """Clone the voice from a reference audio sample and use it to read text."""
+    """**音色克隆**：从一段参考音频里克隆出说话人音色，并用它朗读文本。
+
+    适用场景：
+    - 用户说「请克隆 /path/xx.mp3 的声音读……」「Clone the voice in this file: ...」
+    - 用户提供了一段音频样本，要求"用 ta 的声音"
+
+    需要 `text` 和 `reference_audio`。`reference_audio` 可以是本地路径或 base64 data URI。
+    """
     voice_uri = _read_voice_reference(reference_audio)
     payload = {
         "model": model,
@@ -272,7 +320,10 @@ def tts_voice_clone(
 
 @mcp.tool()
 def list_voices() -> dict[str, Any]:
-    """List known built-in voices, supported TTS model ids, and the active endpoint."""
+    """List known built-in voices, supported TTS model ids, and the active endpoint.
+
+    适用场景：用户想知道「都有哪些音色 / 当前接的是哪个端点」时调用。
+    """
     return {
         "built_in_voices": BUILT_IN_VOICES,
         "models": [
@@ -285,6 +336,39 @@ def list_voices() -> dict[str, Any]:
         "base_url": BASE_URL,
         "output_dir": str(OUTPUT_DIR),
     }
+
+
+# ---------------------------------------------------------------------------
+# Optional bearer auth middleware (HTTP transports only)
+# ---------------------------------------------------------------------------
+
+class _BearerAuthASGI:
+    """Minimal ASGI middleware that requires `Authorization: Bearer <token>`."""
+
+    def __init__(self, app: Any, token: str) -> None:
+        self.app = app
+        self.expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope.get("headers") or [])
+        if headers.get(b"authorization", b"") != self.expected:
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"www-authenticate", b'Bearer realm="mimo-tts-mcp"'),
+                ],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b'{"error":"unauthorized"}',
+            })
+            return
+        await self.app(scope, receive, send)
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +396,37 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.transport in ("sse", "streamable-http"):
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
-
     print(
         f"[xiaomi-mimo-tts-mcp] transport={args.transport} plan={PLAN} "
-        f"base_url={BASE_URL} output_dir={OUTPUT_DIR}",
+        f"base_url={BASE_URL} output_dir={OUTPUT_DIR} "
+        f"auth={'on' if AUTH_TOKEN else 'off'}",
         file=sys.stderr,
     )
-    mcp.run(transport=args.transport)
+
+    if args.transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+
+    # HTTP transports — wrap with optional bearer auth and run via uvicorn.
+    import uvicorn  # imported lazily so stdio mode has no extra cost
+
+    if args.transport == "streamable-http":
+        app = mcp.streamable_http_app()
+    else:  # sse
+        app = mcp.sse_app()
+
+    if AUTH_TOKEN:
+        app = _BearerAuthASGI(app, AUTH_TOKEN)
+    elif args.host not in ("127.0.0.1", "localhost"):
+        print(
+            "[xiaomi-mimo-tts-mcp] WARNING: HTTP transport bound to "
+            f"{args.host} without MCP_AUTH_TOKEN. Anyone who can reach this "
+            "port can use your MiMo API quota. Set MCP_AUTH_TOKEN or bind to "
+            "127.0.0.1 + tunnel.",
+            file=sys.stderr,
+        )
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

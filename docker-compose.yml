@@ -10,6 +10,8 @@ services:
       MIMO_PLAN: ${MIMO_PLAN:-}
       MIMO_REGION: ${MIMO_REGION:-cn}
       MIMO_BASE_URL: ${MIMO_BASE_URL:-}
+      # Strongly recommended when exposing the port publicly:
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: 8000

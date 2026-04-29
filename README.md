@@ -15,8 +15,9 @@ command via Docker / docker compose.
 - 🎨 `tts_voice_design` — generate a voice from a text description
 - 🧬 `tts_voice_clone` — clone a voice from a reference audio file
 - 🗂️ `list_voices` — discover built-in voices, models, and active endpoint
-- 💳 Auto-routes to the correct base URL for **pay-as-you-go** or **Token Plan**
+- 💳 Auto-routes to the right base URL for **pay-as-you-go** or **Token Plan**
   (CN / SGP / AMS clusters) based on the key prefix
+- 🛡️ Optional bearer-token auth for safe public exposure (`MCP_AUTH_TOKEN`)
 - 🚚 stdio (default) **and** Streamable HTTP / SSE transports
 - 🐳 One-command Docker / docker-compose deployment
 
@@ -33,9 +34,9 @@ All requests use `api-key: <KEY>` (not `Authorization: Bearer …`), exactly as
 the [official docs](https://platform.xiaomimimo.com/docs/usage-guide/speech-synthesis-v2.5)
 specify. The two key types are **not** interchangeable.
 
-## Quick start
+## Quick start (server side)
 
-### Option A — local (stdio)
+### Option A — local (stdio, single machine only)
 
 ```bash
 git clone https://github.com/NanAquarius/Xiaomi-MiMo-TTS-MCP.git
@@ -43,34 +44,142 @@ cd Xiaomi-MiMo-TTS-MCP
 pip install .
 
 export MIMO_API_KEY=sk-...    # or tp-... for Token Plan
-xiaomi-mimo-tts-mcp           # stdio transport, ready for MCP clients
+xiaomi-mimo-tts-mcp           # stdio transport
 ```
 
-### Option B — Docker (Streamable HTTP)
+### Option B — Docker (Streamable HTTP, works for remote VPS too)
 
 ```bash
-cp .env.example .env          # then edit MIMO_API_KEY
+cp .env.example .env          # edit MIMO_API_KEY and MCP_AUTH_TOKEN
 docker compose up -d --build
-# MCP endpoint: http://localhost:8000/mcp
+# MCP endpoint: http://<server-ip>:8000/mcp
 ```
 
-Or with plain Docker:
+## Connecting from a remote machine (the typical case)
+
+If the MCP server runs on a VPS but Cherry Studio runs on your laptop, you
+**must** use one of the HTTP transports — stdio only works in-process on the
+same host.
+
+### 1. On the VPS — start the server with auth
 
 ```bash
-docker build -t xiaomi-mimo-tts-mcp .
-docker run --rm -p 8000:8000 \
-  -e MIMO_API_KEY=tp-... \
-  -e MIMO_PLAN=token-plan \
-  -e MIMO_REGION=sgp \
-  -v "$PWD/tts_output:/data/tts_output" \
-  xiaomi-mimo-tts-mcp
+cd ~/Xiaomi-MiMo-TTS-MCP
+
+# generate a strong token once
+echo "MCP_AUTH_TOKEN=$(openssl rand -hex 32)" >> .env
+echo "MIMO_API_KEY=sk-..."                    >> .env   # or tp-...
+
+docker compose up -d --build
 ```
 
-## Client configuration
+Open the firewall:
 
-### Cherry Studio (stdio, recommended for desktop)
+```bash
+# Ubuntu / Debian (ufw)
+sudo ufw allow 8000/tcp
 
-`Settings → MCP Servers → Add → Type: stdio`
+# Or any cloud-provider security group: allow inbound TCP 8000
+```
+
+For HTTPS in production, put **Caddy** or **Nginx** in front (recommended):
+
+```caddy
+# /etc/caddy/Caddyfile
+mimo.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+…then bind the MCP server to `127.0.0.1` (`MCP_HOST=127.0.0.1`) so only Caddy
+can reach it. Cherry Studio connects to `https://mimo.example.com/mcp`.
+
+### 2. In Cherry Studio — add the remote MCP
+
+`Settings → MCP Servers → Add → Type: streamableHttp` (or `SSE`)
+
+| Field | Value |
+|-------|-------|
+| Name | `xiaomi-mimo-tts` |
+| URL | `http://<your-vps-ip>:8000/mcp` (or your HTTPS domain) |
+| Headers | `Authorization: Bearer <MCP_AUTH_TOKEN>` |
+
+> 💡 No domain / no HTTPS yet? You can also tunnel through SSH:
+> `ssh -N -L 8000:127.0.0.1:8000 user@your-vps`, then point Cherry Studio at
+> `http://127.0.0.1:8000/mcp`.
+
+### Security notes
+
+- **Always** set `MCP_AUTH_TOKEN` if the port is reachable from the public
+  internet. Without it, anyone who finds the URL can burn your MiMo quota.
+- Prefer HTTPS (Caddy / Nginx) so the bearer token is not sent in plaintext.
+- Or, don't expose at all: bind to `127.0.0.1` and use SSH tunnels / Tailscale
+  / WireGuard.
+
+## Out-of-the-box prompt recipes (zero-config TTS)
+
+Once the MCP is connected in Cherry Studio, **just chat naturally**. The model
+will pick the right tool automatically — every required parameter except the
+text/reference has a sensible default.
+
+| What you type | Tool the model picks | What happens |
+|---------------|----------------------|--------------|
+| `请朗读：今天天气真好，适合出门散步。` | `tts_synthesize` | Default voice `Chloe`, wav, returns file path |
+| `请用 default_zh 这个音色读："欢迎使用小米 MiMo"` | `tts_synthesize` (`voice="default_zh"`) | Switches voice |
+| `用兴奋、快语速的语气读："我中奖啦！"` | `tts_synthesize` (`style="excited, fast"`) | Style/emotion controlled |
+| `请设计一个慵懒的小女孩声音，读："好困啊……"` | `tts_voice_design` | Generates a fresh voice from the description |
+| `请克隆 /data/sample.mp3 的声音，读："Hello, this is me."` | `tts_voice_clone` | Voice cloned from the reference file |
+| `MiMo TTS 都支持哪些音色？` | `list_voices` | Lists built-in voices and the current endpoint |
+
+The audio file path is returned in the chat. Cherry Studio will show it as a
+clickable link; the file lives under `MIMO_OUTPUT_DIR` on the **server**
+(default `/data/tts_output` inside the container, mounted to `./tts_output`).
+
+### Recommended copy-paste prompts
+
+**1. Plain reading (smallest possible request)**
+
+```
+请用 MiMo TTS 朗读：「明天上午九点准时开会，请提前十分钟到场。」
+```
+
+**2. With a specific voice**
+
+```
+调用 xiaomi-mimo-tts，用 default_zh 这个音色，把下面这段读成一个 wav 文件：
+「夜晚的城市像一片亮着灯的森林。」
+```
+
+**3. With emotion / style**
+
+```
+调用 MiMo TTS 工具，风格设置为「温柔，慢速，像睡前故事」，朗读：
+「从前有一只小猫，住在一个长满向日葵的院子里……」
+```
+
+**4. Design a brand-new voice**
+
+```
+请用 tts_voice_design 工具：
+- 音色描述：年轻男声，带一点慵懒的播音腔
+- 朗读内容：「欢迎收听今晚的深夜电台。」
+```
+
+**5. Clone a voice from a reference file**
+
+```
+请用 tts_voice_clone 工具：
+- 参考音频：/data/tts_output/me_sample.mp3
+- 朗读内容：「Hello world, this is my cloned voice.」
+```
+
+> Note: for cloning, the path must be readable **by the MCP process** (i.e. on
+> the server / inside the Docker container). Mount your samples into
+> `/data/tts_output` or another shared volume.
+
+## Client configuration cheatsheet
+
+### Cherry Studio · stdio (local server only)
 
 ```json
 {
@@ -83,11 +192,21 @@ docker run --rm -p 8000:8000 \
 }
 ```
 
-### Cherry Studio / any client (HTTP, when using Docker)
+### Cherry Studio · streamable HTTP (remote VPS)
 
-`Type: streamableHttp` — URL: `http://localhost:8000/mcp`
+```json
+{
+  "mcpServers": {
+    "xiaomi-mimo-tts": {
+      "type": "streamableHttp",
+      "url": "https://mimo.example.com/mcp",
+      "headers": { "Authorization": "Bearer <MCP_AUTH_TOKEN>" }
+    }
+  }
+}
+```
 
-### Claude Desktop
+### Claude Desktop (stdio)
 
 `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
 `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
@@ -105,12 +224,12 @@ docker run --rm -p 8000:8000 \
 
 ## Tool reference
 
-| Tool | Required args | Notes |
-|------|---------------|-------|
-| `tts_synthesize` | `text` | Optional `voice` (default `Chloe`), `style`, `fmt` (`wav`/`mp3`/`pcm16`), `model` |
-| `tts_voice_design` | `text`, `voice_description` | Uses `mimo-v2.5-tts-voicedesign` |
-| `tts_voice_clone` | `text`, `reference_audio` | `reference_audio` may be a local path or a `data:audio/...;base64,...` URI |
-| `list_voices` | — | Returns built-in voices, model ids, plan, base URL, output dir |
+| Tool | Required | Optional (with defaults) | Notes |
+|------|----------|--------------------------|-------|
+| `tts_synthesize` | `text` | `voice`=`Chloe`, `style`=∅, `fmt`=`wav`, `model`=`mimo-v2.5-tts` | The default — most "请朗读…" requests land here |
+| `tts_voice_design` | `text`, `voice_description` | `fmt`=`wav`, `model`=`mimo-v2.5-tts-voicedesign` | Generates a new voice from a textual description |
+| `tts_voice_clone` | `text`, `reference_audio` | `fmt`=`wav`, `model`=`mimo-v2.5-tts-voiceclone` | `reference_audio` = local path **or** `data:audio/...;base64,…` |
+| `list_voices` | — | — | Returns voices, models, plan, base_url, output_dir |
 
 All synthesize tools return `{ "path": "...", "format": "...", ... }` — the
 audio is written to `MIMO_OUTPUT_DIR` (default `./tts_output`, or
@@ -126,9 +245,10 @@ provided compose file).
 | `MIMO_REGION` | `cn` | Token Plan cluster: `cn`, `sgp`, or `ams`. |
 | `MIMO_BASE_URL` | derived | Hard override that wins over `MIMO_PLAN` / `MIMO_REGION`. |
 | `MIMO_OUTPUT_DIR` | `./tts_output` | Where audio files are written. |
-| `MCP_TRANSPORT` | `stdio` | `stdio` / `sse` / `streamable-http` |
+| `MCP_TRANSPORT` | `stdio` | `stdio` / `sse` / `streamable-http`. |
 | `MCP_HOST` | `0.0.0.0` | HTTP bind host. |
 | `MCP_PORT` | `8000` | HTTP bind port. |
+| `MCP_AUTH_TOKEN` | unset | If set, HTTP transports require `Authorization: Bearer <token>`. |
 
 ## License
 

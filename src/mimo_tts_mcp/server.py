@@ -107,6 +107,18 @@ BASE_URL, PLAN = _resolve_base_url(API_KEY)
 OUTPUT_DIR = Path(_env("MIMO_OUTPUT_DIR", "./tts_output") or "./tts_output").resolve()
 AUTH_TOKEN = _env("MCP_AUTH_TOKEN")  # optional bearer auth for HTTP transport
 
+
+def _split_csv(name: str) -> list[str]:
+    raw = _env(name, "") or ""
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+ALLOWED_HOSTS = _split_csv("MCP_ALLOWED_HOSTS")
+ALLOWED_ORIGINS = _split_csv("MCP_ALLOWED_ORIGINS")
+DISABLE_DNS_REBINDING = (_env("MCP_DISABLE_DNS_REBINDING_PROTECTION", "") or "").lower() in (
+    "1", "true", "yes", "on",
+)
+
 # Sanity warning on key/plan mismatch.
 if API_KEY:
     if PLAN == "token-plan" and API_KEY.startswith("sk-"):
@@ -407,8 +419,33 @@ def main() -> None:
         mcp.run(transport="stdio")
         return
 
-    # HTTP transports — wrap with optional bearer auth and run via uvicorn.
+    # HTTP transports — configure DNS-rebinding protection, wrap with optional
+    # bearer auth, then run via uvicorn.
     import uvicorn  # imported lazily so stdio mode has no extra cost
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    sec = mcp.settings.transport_security or TransportSecuritySettings()
+    bound_to_loopback = args.host in ("127.0.0.1", "localhost", "::1")
+
+    if DISABLE_DNS_REBINDING:
+        sec.enable_dns_rebinding_protection = False
+    elif ALLOWED_HOSTS or ALLOWED_ORIGINS:
+        sec.enable_dns_rebinding_protection = True
+        if ALLOWED_HOSTS:
+            sec.allowed_hosts = ALLOWED_HOSTS
+        if ALLOWED_ORIGINS:
+            sec.allowed_origins = ALLOWED_ORIGINS
+    elif AUTH_TOKEN and not bound_to_loopback:
+        # Bearer auth already prevents the attack class DNS-rebinding mitigates;
+        # auto-relax so the server is reachable from the configured public host.
+        sec.enable_dns_rebinding_protection = False
+        print(
+            "[xiaomi-mimo-tts-mcp] DNS rebinding protection auto-disabled "
+            "because MCP_AUTH_TOKEN is set. Set MCP_ALLOWED_HOSTS / "
+            "MCP_ALLOWED_ORIGINS to restrict explicitly.",
+            file=sys.stderr,
+        )
+    mcp.settings.transport_security = sec
 
     if args.transport == "streamable-http":
         app = mcp.streamable_http_app()
